@@ -83,7 +83,7 @@ from ..permission import (
     PermissionEngine,
     PermissionDecision,
 )
-from ..workspace import Offloader
+from ..workspace import Offloader, WorkspaceBase
 
 if TYPE_CHECKING:
     from ..middleware import MiddlewareBase
@@ -675,6 +675,20 @@ class Agent:
         yield ExceedMaxItersEvent(
             reply_id=self.state.reply_id,
             name=self.name,
+        )
+        logger.warning(
+            "Agent %s exceeds the max iteration numbers %d. "
+            "Stop the react loop.",
+            self.name,
+            self.react_config.max_iters,
+        )
+
+        # Mirror the normal-exit path so subscribers (e.g. SSE clients
+        # waiting on a terminal event) don't hang when the loop bails
+        # out on max_iters.
+        yield ReplyEndEvent(
+            session_id=self.state.session_id,
+            reply_id=self.state.reply_id,
         )
 
         yield AssistantMsg(
@@ -1958,9 +1972,17 @@ class Agent:
         prompt = [self._system_prompt]
 
         # Skill related instructions
-        skill_instructions = await self.toolkit.get_skill_instructions()
+        skill_instructions = await self.toolkit.get_skill_instructions(
+            self.state.tool_context.activated_groups,
+        )
         if skill_instructions:
             prompt.append(skill_instructions)
+
+        # Workspace & offloader instructions
+        if isinstance(self.offloader, WorkspaceBase):
+            offload_instructions = await self.offloader.get_instructions()
+            if offload_instructions:
+                prompt.append(offload_instructions)
 
         result = "\n".join(prompt)
 
